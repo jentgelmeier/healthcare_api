@@ -1,42 +1,37 @@
-import { Patient, PatientResponse, PatientScore, Results } from "./types.ts";
+import {
+  NumberPlus,
+  Patient,
+  PatientResponse,
+  PatientScore,
+  Results,
+  StringPlus,
+} from "./types.ts";
 
 // execution
-sortPatients();
+submit();
 
 // function declarations
-async function scorePatients(): Promise<PatientScore[]> {
-  const patients: PatientResponse = await getPatients();
-  let patientScores: PatientScore[] = [];
+async function submit(): Promise<void> {
+  const results = await getResults();
+  console.log("results", results);
 
-  for (let patient of patients.data) {
-    let id = patient.patient_id;
-    let invalidData = 0;
-    let blood = scoreBloodPressure(patient);
-    let temp = scoreTemp(patient);
-    let age = scoreAge(patient);
-
-    // check for invalid data
-    if (blood < 0) {
-      invalidData = 1;
-      blood = 0;
+  const response: Response = await fetch(
+    "https://assessment.ksensetech.com/api/submit-assessment",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": "ak_f873e7a598c2be9d66bbce4272f42c2b977a8e6f41a5a28d",
+      },
+      body: JSON.stringify(results),
     }
-    if (temp < 0) {
-      invalidData = 1;
-      temp = 0;
-    }
-    if (age < 0) {
-      invalidData = 1;
-      age = 0;
-    }
-
-    patientScores.push({ id, blood, temp, age, invalidData });
-  }
-  console.log(patientScores);
-  return patientScores;
+  );
+  const finalResponse = await response.json();
+  console.log("Assessment Results:", finalResponse);
 }
 
-async function sortPatients(): Promise<Results> {
-  const scores = await scorePatients();
+async function getResults(): Promise<Results> {
+  const scores = await scoreAllPatients();
   const results: Results = {
     high_risk_patients: [],
     fever_patients: [],
@@ -56,13 +51,69 @@ async function sortPatients(): Promise<Results> {
       results.data_quality_issues.push(score.id);
     }
   }
-  console.log(results);
+
   return results;
 }
 
-async function getPatients(): Promise<PatientResponse> {
-  const response: Response = await fetch(
-    "https://assessment.ksensetech.com/api/patients",
+async function scoreAllPatients(): Promise<PatientScore[]> {
+  let patients: PatientResponse;
+  let allScores: PatientScore[] = [];
+  let page = 1;
+
+  // fetch one page at a time. If the fetch doesn't return the data correctly, fetch again.
+  // If it returns the data correctly, fetch the next page until there are no more pages.
+  do {
+    patients = await fetchPatients(page, 20);
+    if (patients.data) {
+      console.log("patient raw data", patients);
+      allScores = [...allScores, ...scorePatientPage(patients)];
+      page++;
+    }
+  } while (
+    patients.pagination === undefined ||
+    patients.pagination.hasNext === true
+  );
+
+  console.log("patient scores", allScores);
+  return allScores;
+}
+
+function scorePatientPage(patients: PatientResponse): PatientScore[] {
+  let patientScores: PatientScore[] = [];
+
+  for (let patient of patients.data) {
+    let id = patient.patient_id;
+    let invalidData = 0;
+    let blood = scoreBloodPressure(patient);
+    let temp = scoreTemp(patient);
+    let age = scoreAge(patient);
+
+    // check for invalid data by looking for -1. If so, mark invalidData = 1 and set the invalid score to 0.
+    if (blood < 0) {
+      invalidData = 1;
+      blood = 0;
+    }
+    if (temp < 0) {
+      invalidData = 1;
+      temp = 0;
+    }
+    if (age < 0) {
+      invalidData = 1;
+      age = 0;
+    }
+
+    patientScores.push({ id, blood, temp, age, invalidData });
+  }
+
+  return patientScores;
+}
+
+async function fetchPatients(
+  page: number,
+  limit: number
+): Promise<PatientResponse> {
+  const response = await fetch(
+    `https://assessment.ksensetech.com/api/patients?page=${page}&limit=${limit}`,
     {
       method: "GET",
       headers: {
@@ -72,41 +123,44 @@ async function getPatients(): Promise<PatientResponse> {
   );
 
   const patients: PatientResponse = (await response.json()) as PatientResponse;
-  console.log(patients);
+
   return patients;
 }
 
+// scoring functions
 function scoreBloodPressure(patient: Patient): number {
-  const { blood_pressure }: { blood_pressure: string } = patient;
+  const { blood_pressure }: { blood_pressure: StringPlus } = patient;
 
-  if (!blood_pressure.match(/\d{1,3}\/\d{1,3}/)) {
+  if (
+    typeof blood_pressure !== "string" ||
+    !blood_pressure.match(/\d{1,3}\/\d{1,3}/)
+  ) {
     // invalid data
     return -1;
   } else {
     let pressures = blood_pressure.split("/");
     const systolic = Number(pressures[0]);
     const diastolic = Number(pressures[1]);
-    if (systolic < 120 && diastolic < 80) {
-      return 0;
-    } else if (systolic < 130 && diastolic < 80) {
-      return 1;
-    } else if (systolic < 140 || diastolic < 90) {
-      return 2;
-    } else {
+    if (systolic >= 140 || diastolic >= 90) {
       return 3;
+    } else if (systolic >= 130 || diastolic >= 80) {
+      return 2;
+    } else if (systolic >= 120 && diastolic < 80) {
+      return 1;
+    } else {
+      return 0;
     }
   }
 }
 
 function scoreTemp(patient: Patient): number {
-  const { temperature }: { temperature: number | string | null | undefined } =
-    patient;
+  const { temperature }: { temperature: NumberPlus } = patient;
 
   if (typeof temperature !== "number") {
     // invalid data
     return -1;
   } else {
-    if (temperature < 99.6) {
+    if (temperature <= 99.5) {
       return 0;
     } else if (temperature < 101) {
       return 1;
@@ -117,7 +171,7 @@ function scoreTemp(patient: Patient): number {
 }
 
 function scoreAge(patient: Patient): number {
-  const { age }: { age: number | string | null | undefined } = patient;
+  const { age }: { age: NumberPlus } = patient;
 
   if (typeof age !== "number") {
     // invalid data

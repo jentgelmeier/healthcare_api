@@ -1,9 +1,13 @@
+export type NumberPlus = number | string | null | undefined;
+
+export type StringPlus = string | null | undefined;
+
 export interface Patient {
   patient_id: string;
-  age: number;
+  age: NumberPlus;
   gender: string;
-  blood_pressure: string;
-  temperature: number;
+  blood_pressure: StringPlus;
+  temperature: NumberPlus;
   visit_date: Date;
   diagnosis: string;
   medications: string;
